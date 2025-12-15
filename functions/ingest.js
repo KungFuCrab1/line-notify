@@ -40,7 +40,7 @@ export async function onRequestPost({ request, env }) {
 `⚠️ 溫度過高
 設備：${data.deviceId || "ESP32"}
 溫度：${t} °C
-濕度：${h ?? "-"} %
+濕度：${h 35 "-"} %
 時間：${data.ts || ""}`;
 
     await pushLine(env, msg);
