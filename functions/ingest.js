@@ -1,3 +1,4 @@
+// functions/api/ingest.js
 async function pushLine(env, text) {
   const body = {
     to: env.LINE_USER_ID,
@@ -15,13 +16,13 @@ async function pushLine(env, text) {
 }
 
 export async function onRequestPost({ request, env }) {
-  // Header 驗證
+  // 1) Header 驗證（你的 Node proxy / SIM7028 轉送時要帶 X-API-Key）
   const apiKey = request.headers.get("X-API-Key");
-  if (apiKey !== env.API_KEY) {
+  if (!apiKey || apiKey !== env.API_KEY) {
     return new Response("forbidden", { status: 403 });
   }
 
-  // 讀 JSON
+  // 2) 讀 JSON
   let data;
   try {
     data = await request.json();
@@ -29,6 +30,7 @@ export async function onRequestPost({ request, env }) {
     return new Response("Bad Request: invalid JSON", { status: 400 });
   }
 
+  // 3) 解析數值
   const t = Number(data.t);
   const h = Number(data.h);
   const limit = Number(env.TEMP_LIMIT || 35);
@@ -37,11 +39,11 @@ export async function onRequestPost({ request, env }) {
     return new Response("Bad Request: t must be a number", { status: 400 });
   }
 
-  // 超溫才通知
+  // 4) 超溫才通知
   if (t >= limit) {
     const msg =
 `⚠️ 溫度過高
-設備：${data.deviceId || "ESP32"}
+設備：${data.deviceId || "ESP32/LinkIt"}
 溫度：${t} °C
 濕度：${Number.isFinite(h) ? h : "-"} %
 時間：${data.ts || ""}`;
@@ -49,8 +51,10 @@ export async function onRequestPost({ request, env }) {
     const res = await pushLine(env, msg);
     const text = await res.text();
 
-    // 這行很重要：直接把 LINE 回應吐出來，方便你立刻知道 token/userId 有沒有錯
-    return new Response(`push status=${res.status}\n${text}`, { status: res.ok ? 200 : 500 });
+    // 直接把 LINE 回應吐出來：token / userId 錯會一眼看出來
+    return new Response(`push status=${res.status}\n${text}`, {
+      status: res.ok ? 200 : 500
+    });
   }
 
   return new Response("OK (no alert)");
