@@ -1,96 +1,104 @@
-async function pushLine(env, text) {
-  const payload = {
-    to: env.LINE_USER_ID,
-    messages: [{ type: "text", text }],
-  };
-
-  return fetch("https://api.line.me/v2/bot/message/push", {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${env.LINE_CHANNEL_TOKEN}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify(payload),
-  });
-}
-
+// functions/api/ingest.js
 export async function onRequestPost({ request, env }) {
-  // 1) API KEY 驗證（Node proxy 轉送時要帶 X-API-Key）
-    // ====== (NEW) 寫入 D1：每筆都存，方便圖表 ======
-  const deviceId = data.deviceId || "SIM7028";
-  const pm25 = data.pm25 == null ? null : Number(data.pm25);
-  const ts = Math.floor(Date.now() / 1000);
-
-  if (env.DB) {
-    await env.DB.prepare(
-      "INSERT INTO readings (deviceId, t, h, pm25, ts) VALUES (?, ?, ?, ?, ?)"
-    ).bind(
-      deviceId,
-      Number.isFinite(t) ? t : null,
-      Number.isFinite(h) ? h : null,
-      Number.isFinite(pm25) ? pm25 : null,
-      ts
-    ).run();
+  // ====== 1) API Key 驗證 ======
+  const apiKey = (request.headers.get("X-API-Key") || "").trim();
+  const expectedKey = String(env.API_KEY || "").trim();
+  if (expectedKey && apiKey !== expectedKey) {
+    return new Response("Unauthorized", { status: 401 });
   }
 
-  const apiKey = request.headers.get("X-API-Key");
-  if (!apiKey || apiKey !== env.API_KEY) {
-    return new Response("forbidden", { status: 403 });
-  }
-
-  // 2) 解析 JSON
+  // ====== 2) 讀取 JSON ======
   let data;
   try {
     data = await request.json();
-  } catch {
-    return new Response("Bad Request: invalid JSON", { status: 400 });
+  } catch (e) {
+    return new Response("Bad JSON", { status: 400 });
   }
 
-  // 3) 取出溫濕度/門檻
+  // ====== 3) 解析欄位 ======
+  const deviceId = String(data.deviceId || "SIM7028");
   const t = Number(data.t);
   const h = Number(data.h);
-  const limit = Number(env.TEMP_LIMIT ?? 18);          // 你要 10 度以上
-  const cooldownSec = Number(env.COOLDOWN_SEC ?? 8); // 8 秒
+  const pm25 = data.pm25 == null ? null : Number(data.pm25);
+  const ts = Math.floor(Date.now() / 1000);
 
-  if (!Number.isFinite(t)) {
-    return new Response("Bad Request: t must be a number", { status: 400 });
+  // ====== 4) 寫入 D1（每筆都存，圖表用） ======
+  // 需要 Pages 綁定 D1：binding name = DB
+  try {
+    if (env.DB) {
+      await env.DB.prepare(
+        "INSERT INTO readings (deviceId, t, h, pm25, ts) VALUES (?, ?, ?, ?, ?)"
+      )
+        .bind(
+          deviceId,
+          Number.isFinite(t) ? t : null,
+          Number.isFinite(h) ? h : null,
+          Number.isFinite(pm25) ? pm25 : null,
+          ts
+        )
+        .run();
+    }
+  } catch (e) {
+    // 資料庫失敗也不要影響主流程（先回應 OK + 仍可推播）
+    // 但你要除錯可到 CF logs 看
+    console.log("D1 insert error:", e?.message || String(e));
   }
 
-  // 4) 超溫才推播
-  if (t >= limit) {
-    // ---- 冷卻機制：每個 deviceId 10 分鐘只推一次 ----
-    // 需要在 Pages 綁定 KV：ALERT_KV
-    const deviceId = data.deviceId || "SIM7028";
-    const key = `lastSent:${deviceId}`;
-    const now = Math.floor(Date.now() / 1000);
+  // ====== 5) 溫度門檻與冷卻設定 ======
+  const limit = Number(env.TEMP_LIMIT ?? 18);        // 你要 18 就設 TEMP_LIMIT=18
+  const cooldown = Number(env.COOLDOWN_SEC ?? 600);  // 預設 10 分鐘
 
-    if (env.ALERT_KV) {
-      const last = Number((await env.ALERT_KV.get(key)) || 0);
-      if (last && now - last < cooldownSec) {
-        return new Response(`OK (cooldown ${cooldownSec}s)`);
-      }
-    }
-
-    const msg =
-`⚠️ 溫度過高
-設備：${deviceId}
-溫度：${t} °C
-濕度：${Number.isFinite(h) ? h : "-"} %
-時間：${new Date().toLocaleString("zh-TW", { timeZone: "Asia/Taipei" })}`;
-
-    const res = await pushLine(env, msg);
-    const text = await res.text();
-
-    // 推播成功才寫入 lastSent（避免 token 壞掉卻鎖住）
-    if (res.ok && env.ALERT_KV) {
-      await env.ALERT_KV.put(key, String(now), { expirationTtl: 24 * 3600 });
-    }
-
-    // 回傳 LINE API 狀態，方便你排錯
-    return new Response(`push status=${res.status}\n${text}`, {
-      status: res.ok ? 200 : 500,
-    });
+  // 未超標 → 不推播
+  if (!Number.isFinite(t) || t < limit) {
+    return new Response("OK (no alert)", { status: 200 });
   }
 
-  return new Response("OK (no alert)");
+  // ====== 6) 冷卻（用 KV 記錄每個 deviceId 的 lastSent） ======
+  // 需要 Pages 綁定 KV：binding name = ALERT_KV
+  const kv = env.ALERT_KV;
+  const key = `lastSent:${deviceId}`;
+
+  if (kv) {
+    const last = Number(await kv.get(key));
+    if (Number.isFinite(last) && ts - last < cooldown) {
+      return new Response(`OK (cooldown ${cooldown}s)`, { status: 200 });
+    }
+    await kv.put(key, String(ts));
+  }
+
+  // ====== 7) 推播 LINE ======
+  const token = String(env.LINE_CHANNEL_TOKEN || "").trim();
+  const to = String(env.LINE_USER_ID || "").trim();
+
+  if (!token || !to) {
+    // 沒設定推播必要參數，就只存資料
+    return new Response("OK (alert skipped: missing LINE env)", { status: 200 });
+  }
+
+  const msg = `⚠️ 溫度警報\nDevice: ${deviceId}\nT: ${t}°C\nH: ${Number.isFinite(h) ? h : "-"}%\nPM2.5: ${Number.isFinite(pm25) ? pm25 : "-"}\nTime: ${new Date().toLocaleString("zh-TW")}`;
+
+  const resp = await fetch("https://api.line.me/v2/bot/message/push", {
+    method: "POST",
+    headers: {
+      "Authorization": `Bearer ${token}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      to,
+      messages: [{ type: "text", text: msg }],
+    }),
+  });
+
+  const text = await resp.text();
+  console.log("push status=", resp.status);
+  if (!resp.ok) {
+    return new Response(`Push failed: ${resp.status}\n${text}`, { status: 502 });
+  }
+
+  return new Response(`push status=${resp.status}\n${text}`, { status: 200 });
 }
+
+// 如果你也想支援 GET /api/ingest（可選）：
+// export async function onRequestGet() {
+//   return new Response("OK", { status: 200 });
+// }
