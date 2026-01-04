@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>IoT Dashboard</title>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <style>
+    body { font-family: system-ui, -apple-system, "Segoe UI", sans-serif; margin: 16px; }
+    .row { display:flex; gap:12px; align-items:center; flex-wrap:wrap; }
+    canvas { max-width: 100%; }
+  </style>
+</head>
+<body>
+  <h2>溫溼度圖表</h2>
+
+  <div class="row">
+    <label>deviceId：
+      <input id="deviceId" placeholder="dht22-01（可留空）" />
+    </label>
+    <label>筆數：
+      <input id="limit" type="number" value="200" min="10" max="1000" />
+    </label>
+    <button id="reload">更新</button>
+  </div>
+
+  <p id="status"></p>
+  <canvas id="chart" height="120"></canvas>
+
+  <script>
+    const ctx = document.getElementById("chart");
+    const statusEl = document.getElementById("status");
+
+    const chart = new Chart(ctx, {
+      type: "line",
+      data: { labels: [], datasets: [
+        { label: "溫度 (°C)", data: [], yAxisID: "y" },
+        { label: "濕度 (%)", data: [], yAxisID: "y1" },
+      ]},
+      options: {
+        responsive: true,
+        interaction: { mode: "index", intersect: false },
+        scales: {
+          y: { type: "linear", position: "left" },
+          y1: { type: "linear", position: "right", grid: { drawOnChartArea: false } },
+        }
+      }
+    });
+
+    async function load() {
+      const deviceId = document.getElementById("deviceId").value.trim();
+      const limit = document.getElementById("limit").value;
+      const qs = new URLSearchParams({ limit });
+      if (deviceId) qs.set("deviceId", deviceId);
+
+      statusEl.textContent = "載入中...";
+      const res = await fetch("/api/data?" + qs.toString());
+      const rows = await res.json();
+
+      const labels = rows.map(r => new Date(r.ts * 1000).toLocaleString("zh-TW"));
+      chart.data.labels = labels;
+      chart.data.datasets[0].data = rows.map(r => r.t);
+      chart.data.datasets[1].data = rows.map(r => r.h);
+      chart.update();
+
+      statusEl.textContent = `共 ${rows.length} 筆`;
+    }
+
+    document.getElementById("reload").addEventListener("click", load);
+    load();
+    setInterval(load, 5000);
+  </script>
+</body>
+</html>
