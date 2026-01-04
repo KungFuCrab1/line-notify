@@ -32,8 +32,8 @@ export async function onRequestPost({ request, env }) {
   // 3) 取出溫濕度/門檻
   const t = Number(data.t);
   const h = Number(data.h);
-  const limit = Number(env.TEMP_LIMIT ?? 10);          // 你要 10 度以上
-  const cooldownSec = Number(env.COOLDOWN_SEC ?? 10); // 10 秒
+  const limit = Number(env.TEMP_LIMIT ?? 18);          // 你要 10 度以上
+  const cooldownSec = Number(env.COOLDOWN_SEC ?? 8); // 8 秒
 
   if (!Number.isFinite(t)) {
     return new Response("Bad Request: t must be a number", { status: 400 });
