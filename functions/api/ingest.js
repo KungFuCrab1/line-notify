@@ -16,6 +16,23 @@ async function pushLine(env, text) {
 
 export async function onRequestPost({ request, env }) {
   // 1) API KEY 驗證（Node proxy 轉送時要帶 X-API-Key）
+    // ====== (NEW) 寫入 D1：每筆都存，方便圖表 ======
+  const deviceId = data.deviceId || "SIM7028";
+  const pm25 = data.pm25 == null ? null : Number(data.pm25);
+  const ts = Math.floor(Date.now() / 1000);
+
+  if (env.DB) {
+    await env.DB.prepare(
+      "INSERT INTO readings (deviceId, t, h, pm25, ts) VALUES (?, ?, ?, ?, ?)"
+    ).bind(
+      deviceId,
+      Number.isFinite(t) ? t : null,
+      Number.isFinite(h) ? h : null,
+      Number.isFinite(pm25) ? pm25 : null,
+      ts
+    ).run();
+  }
+
   const apiKey = request.headers.get("X-API-Key");
   if (!apiKey || apiKey !== env.API_KEY) {
     return new Response("forbidden", { status: 403 });
