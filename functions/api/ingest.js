@@ -1,4 +1,3 @@
-// functions/api/ingest.js
 export async function onRequestPost({ request, env }) {
   // ====== 1) API Key 驗證 ======
   const apiKey = (request.headers.get("X-API-Key") || "").trim();
@@ -20,10 +19,11 @@ export async function onRequestPost({ request, env }) {
   const t = Number(data.t);
   const h = Number(data.h);
   const pm25 = data.pm25 == null ? null : Number(data.pm25);
+
+  // UTC 秒（資料庫用，正確設計）
   const ts = Math.floor(Date.now() / 1000);
 
   // ====== 4) 寫入 D1（每筆都存，圖表用） ======
-  // 需要 Pages 綁定 D1：binding name = DB
   try {
     if (env.DB) {
       await env.DB.prepare(
@@ -39,22 +39,19 @@ export async function onRequestPost({ request, env }) {
         .run();
     }
   } catch (e) {
-    // 資料庫失敗也不要影響主流程（先回應 OK + 仍可推播）
-    // 但你要除錯可到 CF logs 看
     console.log("D1 insert error:", e?.message || String(e));
   }
 
   // ====== 5) 溫度門檻與冷卻設定 ======
-  const limit = Number(env.TEMP_LIMIT ?? 18);        // 你要 18 就設 TEMP_LIMIT=18
-  const cooldown = Number(env.COOLDOWN_SEC ?? 600);  // 預設 10 分鐘
+  const limit = Number(env.TEMP_LIMIT ?? 18);        // 預設 18°C
+  const cooldown = Number(env.COOLDOWN_SEC ?? 600); // 預設 10 分鐘
 
   // 未超標 → 不推播
   if (!Number.isFinite(t) || t < limit) {
     return new Response("OK (no alert)", { status: 200 });
   }
 
-  // ====== 6) 冷卻（用 KV 記錄每個 deviceId 的 lastSent） ======
-  // 需要 Pages 綁定 KV：binding name = ALERT_KV
+  // ====== 6) 冷卻控制（KV） ======
   const kv = env.ALERT_KV;
   const key = `lastSent:${deviceId}`;
 
@@ -66,16 +63,27 @@ export async function onRequestPost({ request, env }) {
     await kv.put(key, String(ts));
   }
 
-  // ====== 7) 推播 LINE ======
+  // ====== 7) LINE 推播 ======
   const token = String(env.LINE_CHANNEL_TOKEN || "").trim();
   const to = String(env.LINE_USER_ID || "").trim();
 
   if (!token || !to) {
-    // 沒設定推播必要參數，就只存資料
     return new Response("OK (alert skipped: missing LINE env)", { status: 200 });
   }
 
-  const msg = `⚠️ 溫度警報\nDevice: ${deviceId}\nT: ${t}°C\nH: ${Number.isFinite(h) ? h : "-"}%\nPM2.5: ${Number.isFinite(pm25) ? pm25 : "-"}\nTime: ${new Date().toLocaleString("zh-TW")}`;
+  // ⭐ 台灣時間（UTC+8，關鍵修正在這）
+  const timeTW = new Date().toLocaleString("zh-TW", {
+    timeZone: "Asia/Taipei",
+    hour12: false,
+  });
+
+  const msg =
+`⚠️ 溫度警報
+Device: ${deviceId}
+T: ${t}°C
+H: ${Number.isFinite(h) ? h : "-"}%
+PM2.5: ${Number.isFinite(pm25) ? pm25 : "-"}
+Time: ${timeTW}`;
 
   const resp = await fetch("https://api.line.me/v2/bot/message/push", {
     method: "POST",
@@ -91,6 +99,7 @@ export async function onRequestPost({ request, env }) {
 
   const text = await resp.text();
   console.log("push status=", resp.status);
+
   if (!resp.ok) {
     return new Response(`Push failed: ${resp.status}\n${text}`, { status: 502 });
   }
@@ -98,7 +107,7 @@ export async function onRequestPost({ request, env }) {
   return new Response(`push status=${resp.status}\n${text}`, { status: 200 });
 }
 
-// 如果你也想支援 GET /api/ingest（可選）：
+// （可選）如果你想支援 GET /api/ingest
 // export async function onRequestGet() {
 //   return new Response("OK", { status: 200 });
 // }
