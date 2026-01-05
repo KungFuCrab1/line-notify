@@ -42,12 +42,22 @@ export async function onRequestPost({ request, env }) {
     console.log("D1 insert error:", e?.message || String(e));
   }
 
-  // ====== 5) 溫度門檻與冷卻設定 ======
-  const limit = Number(env.TEMP_LIMIT ?? 26);        // 預設 18°C
-  const cooldown = Number(env.COOLDOWN_SEC ?? 600); // 預設 10 分鐘
+  // ====== 5) 門檻與冷卻設定 ======
+  // 溫度門檻（你原本的）
+  const tempLimit = Number(env.TEMP_LIMIT ?? 25);
+
+  // ✅ 新增：濕度門檻（預設 70%）
+  const humiLimit = Number(env.HUMI_LIMIT ?? 70);
+
+  // 冷卻秒數（你原本的）
+  const cooldown = Number(env.COOLDOWN_SEC ?? 600);
+
+  // ====== 5.1) 判斷是否超標（新增濕度） ======
+  const overTemp = Number.isFinite(t) && t >= tempLimit;
+  const overHumi = Number.isFinite(h) && h >= humiLimit;
 
   // 未超標 → 不推播
-  if (!Number.isFinite(t) || t < limit) {
+  if (!overTemp && !overHumi) {
     return new Response("OK (no alert)", { status: 200 });
   }
 
@@ -71,16 +81,22 @@ export async function onRequestPost({ request, env }) {
     return new Response("OK (alert skipped: missing LINE env)", { status: 200 });
   }
 
-  // ⭐ 台灣時間（UTC+8，關鍵修正在這）
+  // ⭐ 台灣時間（UTC+8）
   const timeTW = new Date().toLocaleString("zh-TW", {
     timeZone: "Asia/Taipei",
     hour12: false,
   });
 
+  // ✅ 新增：告警原因
+  const reasons = [];
+  if (overTemp) reasons.push(`溫度過高（≥ ${tempLimit}°C）`);
+  if (overHumi) reasons.push(`濕度過高（≥ ${humiLimit}%）`);
+
   const msg =
-`⚠️ 溫度警報
+`⚠️ 環境警報
 Device: ${deviceId}
-T: ${t}°C
+原因: ${reasons.join(" + ")}
+T: ${Number.isFinite(t) ? t : "-"}°C
 H: ${Number.isFinite(h) ? h : "-"}%
 PM2.5: ${Number.isFinite(pm25) ? pm25 : "-"}
 Time: ${timeTW}`;
