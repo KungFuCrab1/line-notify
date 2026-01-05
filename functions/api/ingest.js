@@ -43,7 +43,7 @@ export async function onRequestPost({ request, env }) {
   }
 
   // ====== 5) 溫度門檻與冷卻設定 ======
-  const limit = Number(env.TEMP_LIMIT ?? 18);        // 預設 18°C
+  const limit = Number(env.TEMP_LIMIT ?? 25);        // 預設 18°C
   const cooldown = Number(env.COOLDOWN_SEC ?? 600); // 預設 10 分鐘
 
   // 未超標 → 不推播
